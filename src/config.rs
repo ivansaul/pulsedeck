@@ -1,38 +1,70 @@
 use anyhow::Result;
 use serde::{de::DeserializeOwned, Serialize};
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::{env, fs};
 
 const NEW_CONFIG_DIR: &str = "pulsedeck";
 const OLD_CONFIG_DIR: &str = "driftfm";
 
+fn candidate_base_dirs() -> Vec<PathBuf> {
+    let xdg = env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+    let home = env::var_os("HOME").map(|h| PathBuf::from(h).join(".config"));
+    let native = dirs::config_dir();
+
+    let mut dirs = Vec::new();
+
+    for path in [xdg, home, native].into_iter().flatten() {
+        if !dirs.contains(&path) {
+            dirs.push(path);
+        }
+    }
+
+    dirs
+}
+
+fn config_base_dir() -> Option<PathBuf> {
+    candidate_base_dirs()
+        .into_iter()
+        .map(|base| base.join(NEW_CONFIG_DIR))
+        .find(|dir| dir.exists())
+        .or_else(|| dirs::config_dir().map(|dir| dir.join(NEW_CONFIG_DIR)))
+}
+
 pub fn config_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|base| base.join(NEW_CONFIG_DIR))
+    config_base_dir()
 }
 
 pub fn config_path(file: &str) -> Option<PathBuf> {
     migrate_legacy(file);
-    config_dir().map(|dir| dir.join(file))
+    config_base_dir().map(|dir| dir.join(file))
 }
 
 pub fn migrate_legacy(file: &str) {
-    let Some(base) = dirs::config_dir() else {
-        return;
-    };
+    let bases = candidate_base_dirs();
 
-    let new_path = path_for(&base, NEW_CONFIG_DIR, file);
-    let old_path = path_for(&base, OLD_CONFIG_DIR, file);
-    if new_path.exists() || !old_path.exists() {
+    if bases
+        .iter()
+        .any(|base| path_for(base, NEW_CONFIG_DIR, file).exists())
+    {
         return;
     }
 
-    if let Some(parent) = new_path.parent() {
-        if fs::create_dir_all(parent).is_err() {
-            return;
+    for base in &bases {
+        let old_path = path_for(base, OLD_CONFIG_DIR, file);
+
+        if !old_path.exists() {
+            continue;
         }
-    }
 
-    let _ = fs::copy(old_path, new_path);
+        let new_path = path_for(base, NEW_CONFIG_DIR, file);
+
+        if let Some(parent) = new_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+
+        let _ = fs::copy(old_path, new_path);
+        return;
+    }
 }
 
 pub fn load_json_from_path_with_warning<T: DeserializeOwned + Default>(
